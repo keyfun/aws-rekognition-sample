@@ -1,11 +1,34 @@
 import json
 
 import boto3
+from PIL import Image
 from botocore.exceptions import ClientError
+
+from api.utils import ShowBoundingBoxPositions
 
 
 class Rekognition:
     client = boto3.client('rekognition')
+
+    def compare_faces(self, source_file, target_file):
+        image_source = open(source_file, 'rb')
+        image_target = open(target_file, 'rb')
+
+        response = self.client.compare_faces(
+            SimilarityThreshold=70,
+            SourceImage={'Bytes': image_source.read()},
+            TargetImage={'Bytes': image_target.read()})
+
+        for faceMatch in response['FaceMatches']:
+            position = faceMatch['Face']['BoundingBox']
+            confidence = str(faceMatch['Face']['Confidence'])
+            print('The face at ' +
+                  str(position['Left']) + ' ' +
+                  str(position['Top']) +
+                  ' matches with ' + confidence + '% confidence')
+
+        image_source.close()
+        image_target.close()
 
     def list_collections(self):
         max_results = 2
@@ -93,7 +116,7 @@ class Rekognition:
                 print('   ' + reason)
 
     # TODO: support multiple faces
-    def delete_faces_to_collection(self, collection_id, face_id):
+    def delete_faces_from_collection(self, collection_id, face_id):
         faces = [face_id]
 
         response = self.client.delete_faces(
@@ -113,6 +136,40 @@ class Rekognition:
                   + ' and ' + str(face_detail['AgeRange']['High']) + ' years old')
             print('Here are the other attributes:')
             print(json.dumps(face_detail, indent=4, sort_keys=True))
+
+    def detect_labels(self, bucket, photo):
+        response = self.client.detect_labels(
+            Image={'S3Object': {'Bucket': bucket, 'Name': photo}},
+            MaxLabels=10)
+
+        print('Detected labels for ' + photo)
+        print()
+        for label in response['Labels']:
+            print("Label: " + label['Name'])
+            print("Confidence: " + str(label['Confidence']))
+            print("Instances:")
+            for instance in label['Instances']:
+                print("  Bounding box")
+                print("    Top: " + str(instance['BoundingBox']['Top']))
+                print("    Left: " + str(instance['BoundingBox']['Left']))
+                print("    Width: " + str(instance['BoundingBox']['Width']))
+                print("    Height: " + str(instance['BoundingBox']['Height']))
+                print("  Confidence: " + str(instance['Confidence']))
+                print()
+
+            print("Parents:")
+            for parent in label['Parents']:
+                print("   " + parent['Name'])
+            print("----------")
+
+    def detect_moderation_labels(self, bucket, photo):
+        response = self.client.detect_moderation_labels(
+            Image={'S3Object': {'Bucket': bucket, 'Name': photo}})
+
+        print('Detected labels for ' + photo)
+        for label in response['ModerationLabels']:
+            print(label['Name'] + ' : ' + str(label['Confidence']))
+            print(label['ParentName'])
 
     def list_faces_in_collection(self, collection_id):
         max_results = 2
@@ -138,3 +195,88 @@ class Rekognition:
                     MaxResults=max_results)
             else:
                 tokens = False
+
+    def image_orientation_bounding_box(self, photo):
+        """Exercise the Rekognition recognize_celebrities() method and
+            ShowBoundingBoxPositions()"""
+        # Extract the image width, height, and EXIF data
+        width = None
+        height = None
+        image_binary = None
+        try:
+            with Image.open(photo) as image:
+                width, height = image.size
+                exif = None
+                if 'exif' in image.info:
+                    exif = image.info['exif']
+                print(f'exif: {exif}')
+        except IOError as e:
+            print(e)
+            exit(1)
+        print(f'File name: {photo}')
+        print(f'Image width, height: {width}, {height}')
+
+        # Read the entire image into memory
+        try:
+            with open(photo, 'rb') as f:
+                image_binary = f.read()
+        except IOError as e:
+            print(e)
+            exit(2)
+
+        # Detect the celebrities in the photo
+        response = self.client.recognize_celebrities(Image={'Bytes': image_binary})
+
+        if 'OrientationCorrection' in response:
+            print(f'Image orientation: {response["OrientationCorrection"]}')
+        else:
+            print('No estimated orientation. Check the image\'s Exif metadata.')
+
+        # List the identified celebrities
+        print('Detected celebrities...')
+        celebrities = response['CelebrityFaces']
+        if not celebrities:
+            print('No celebrities detected')
+        else:
+            for celebrity in celebrities:
+                print(f'\nName: {celebrity["Name"]}')
+                print(f'Match confidence: {celebrity["MatchConfidence"]}')
+
+                # List the bounding box that surrounds the face
+                if 'OrientationCorrection' in response:
+                    ShowBoundingBoxPositions(
+                        height, width,
+                        celebrity['Face']['BoundingBox'],
+                        response['OrientationCorrection'])
+
+    def search_faces_by_image_collection(self, collection_id, bucket, file_name):
+        threshold = 70
+        max_faces = 2
+
+        response = self.client.search_faces_by_image(
+            CollectionId=collection_id,
+            Image={'S3Object': {'Bucket': bucket, 'Name': file_name}},
+            FaceMatchThreshold=threshold,
+            MaxFaces=max_faces)
+
+        face_matches = response['FaceMatches']
+        print('Matching faces')
+        for match in face_matches:
+            print('FaceId:' + match['Face']['FaceId'])
+            print('Similarity: ' + "{:.2f}".format(match['Similarity']) + "%")
+
+    def search_faces_collection(self, collection_id, face_id):
+        threshold = 50
+        max_faces = 2
+
+        response = self.client.search_faces(
+            CollectionId=collection_id,
+            FaceId=face_id,
+            FaceMatchThreshold=threshold,
+            MaxFaces=max_faces)
+
+        face_matches = response['FaceMatches']
+        print('Matching faces')
+        for match in face_matches:
+            print('FaceId:' + match['Face']['FaceId'])
+            print('Similarity: ' + "{:.2f}".format(match['Similarity']) + "%")
