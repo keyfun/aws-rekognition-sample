@@ -1,5 +1,5 @@
 Pillow
-arrow==0.14.2
+arrow==0.15.1
 aws-lambda-builders==0.3.0
 aws-sam-cli==0.18.0
 aws-sam-translator==1.10.0
